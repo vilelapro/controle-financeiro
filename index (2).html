@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Controle Financeiro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #F0F3EC; font-family: 'Inter', sans-serif; color: #1B2A34; }
+  .num { font-family: 'Space Grotesk', monospace; font-variant-numeric: tabular-nums; }
+  input, select { font-family: 'Inter', sans-serif; }
+  button { font-family: 'Inter', sans-serif; cursor: pointer; }
+  ::selection { background: #D4A73A55; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+const CATEGORIAS_RECEITA = ["Salário", "Freelance", "Outros"];
+const CATEGORIAS_DESPESA = ["Alimentação", "Transporte", "Moradia", "Lazer", "Saúde", "Outros"];
+
+const CORES_CATEGORIA = {
+  "Salário": "#2F6F4E", "Freelance": "#3E8B63", "Outros": "#7C8A7A",
+  "Alimentação": "#C2542D", "Transporte": "#B8863A", "Moradia": "#8C4A3E",
+  "Lazer": "#A65A8A", "Saúde": "#4A6FA5",
+};
+
+const CHAVE_STORAGE = "controle-financeiro-transacoes";
+
+function formatarMoeda(valor) {
+  return valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function mesAtualISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function carregarDoNavegador() {
+  try {
+    const bruto = localStorage.getItem(CHAVE_STORAGE);
+    return bruto ? JSON.parse(bruto) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function PieChartCanvas({ dados }) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type: "doughnut",
+      data: {
+        labels: dados.map(([cat]) => cat),
+        datasets: [{
+          data: dados.map(([, val]) => val),
+          backgroundColor: dados.map(([cat]) => CORES_CATEGORIA[cat] || "#8A968C"),
+          borderWidth: 0,
+        }],
+      },
+      options: {
+        cutout: "62%",
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: { label: (ctx) => `${ctx.label}: ${formatarMoeda(ctx.parsed)}` },
+          },
+        },
+      },
+    });
+    return () => chartRef.current && chartRef.current.destroy();
+  }, [dados]);
+
+  return <canvas ref={ref} width={140} height={140} />;
+}
+
+function BarChartCanvas({ dados }) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type: "bar",
+      data: {
+        labels: dados.map((d) => d.mes),
+        datasets: [
+          { label: "Receitas", data: dados.map((d) => d.Receitas), backgroundColor: "#2F6F4E", borderRadius: 4, maxBarThickness: 16 },
+          { label: "Despesas", data: dados.map((d) => d.Despesas), backgroundColor: "#C2542D", borderRadius: 4, maxBarThickness: 16 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${formatarMoeda(ctx.parsed.y)}` } },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 11 }, color: "#8A968C" } },
+          y: { grid: { color: "#E2E6DE" }, ticks: { font: { size: 10 }, color: "#8A968C", callback: (v) => v >= 1000 ? `${v / 1000}k` : v } },
+        },
+      },
+    });
+    return () => chartRef.current && chartRef.current.destroy();
+  }, [dados]);
+
+  return <canvas ref={ref} height={180} />;
+}
+
+function ControleFinanceiro() {
+  const [transacoes, setTransacoes] = useState(carregarDoNavegador);
+  const [mesSelecionado, setMesSelecionado] = useState(mesAtualISO());
+
+  const [tipo, setTipo] = useState("despesa");
+  const [descricao, setDescricao] = useState("");
+  const [valor, setValor] = useState("");
+  const [categoria, setCategoria] = useState(CATEGORIAS_DESPESA[0]);
+  const [data, setData] = useState(new Date().toISOString().slice(0, 10));
+  const [hora, setHora] = useState(new Date().toTimeString().slice(0, 5));
+
+  function salvar(novasTransacoes) {
+    setTransacoes(novasTransacoes);
+    try {
+      localStorage.setItem(CHAVE_STORAGE, JSON.stringify(novasTransacoes));
+    } catch (e) {
+      // se o navegador bloquear localStorage (modo privado, etc.), os dados
+      // continuam funcionando na sessão atual, mas não serão salvos ao fechar.
+    }
+  }
+
+  function adicionarTransacao(e) {
+    e.preventDefault();
+    const valorNum = parseFloat(valor.replace(",", "."));
+    if (!descricao.trim() || isNaN(valorNum) || valorNum <= 0) return;
+
+    const nova = { id: Date.now().toString(), tipo, descricao: descricao.trim(), valor: valorNum, categoria, data, hora: hora || "00:00" };
+    salvar([nova, ...transacoes]);
+    setDescricao("");
+    setValor("");
+  }
+
+  function removerTransacao(id) {
+    salvar(transacoes.filter((t) => t.id !== id));
+  }
+
+  const transacoesDoMes = useMemo(
+    () => transacoes.filter((t) => t.data.slice(0, 7) === mesSelecionado).sort((a, b) => b.data.localeCompare(a.data)),
+    [transacoes, mesSelecionado]
+  );
+
+  const { totalReceitas, totalDespesas, saldo } = useMemo(() => {
+    let r = 0, d = 0;
+    transacoesDoMes.forEach((t) => (t.tipo === "receita" ? (r += t.valor) : (d += t.valor)));
+    return { totalReceitas: r, totalDespesas: d, saldo: r - d };
+  }, [transacoesDoMes]);
+
+  const porCategoria = useMemo(() => {
+    const mapa = {};
+    transacoesDoMes.filter((t) => t.tipo === "despesa").forEach((t) => { mapa[t.categoria] = (mapa[t.categoria] || 0) + t.valor; });
+    return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
+  }, [transacoesDoMes]);
+
+  const porMes = useMemo(() => {
+    const mapa = {};
+    transacoes.forEach((t) => {
+      const chave = t.data.slice(0, 7);
+      if (!mapa[chave]) mapa[chave] = { receita: 0, despesa: 0 };
+      mapa[chave][t.tipo] += t.valor;
+    });
+    return Object.entries(mapa).sort((a, b) => a[0].localeCompare(b[0])).slice(-6)
+      .map(([chave, valores]) => ({
+        mes: new Date(chave + "-02").toLocaleDateString("pt-BR", { month: "short" }).replace(".", ""),
+        chave, Receitas: valores.receita, Despesas: valores.despesa,
+      }));
+  }, [transacoes]);
+
+  const nomeMes = new Date(mesSelecionado + "-02").toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <div style={{ background: "#1B2A34", color: "#F0F3EC", padding: "28px 20px 36px", position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", top: -30, right: -30, width: 140, height: 140, borderRadius: "50%", border: "1px solid #F0F3EC22" }} />
+        <div style={{ maxWidth: 480, margin: "0 auto", position: "relative" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
+            <span style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.6, fontWeight: 600 }}>Livro-caixa</span>
+            <input type="month" value={mesSelecionado} onChange={(e) => setMesSelecionado(e.target.value)}
+              style={{ background: "transparent", border: "1px solid #F0F3EC44", color: "#F0F3EC", borderRadius: 6, padding: "5px 8px", fontSize: 13 }} />
+          </div>
+          <div style={{ fontSize: 13, opacity: 0.65, marginBottom: 4, textTransform: "capitalize" }}>{nomeMes}</div>
+          <div className="num" style={{ fontSize: 40, fontWeight: 700, letterSpacing: -0.5, color: saldo >= 0 ? "#7FD9A8" : "#E88A78" }}>{formatarMoeda(saldo)}</div>
+          <div style={{ display: "flex", gap: 20, marginTop: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{color:"#7FD9A8"}}>↑</span><span className="num" style={{ fontSize: 14 }}>{formatarMoeda(totalReceitas)}</span></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{color:"#E88A78"}}>↓</span><span className="num" style={{ fontSize: 14 }}>{formatarMoeda(totalDespesas)}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 20px" }}>
+        <form onSubmit={adicionarTransacao} style={{ background: "#FFFFFF", borderRadius: 14, padding: 18, marginTop: -20, boxShadow: "0 8px 24px -8px #1B2A3422" }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {["despesa", "receita"].map((op) => (
+              <button key={op} type="button" onClick={() => { setTipo(op); setCategoria(op === "receita" ? CATEGORIAS_RECEITA[0] : CATEGORIAS_DESPESA[0]); }}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", background: tipo === op ? (op === "receita" ? "#2F6F4E" : "#C2542D") : "#F0F3EC", color: tipo === op ? "#fff" : "#5B6B5E", fontWeight: 600, fontSize: 13 }}>
+                {op === "receita" ? "Receita" : "Despesa"}
+              </button>
+            ))}
+          </div>
+
+          <input type="text" placeholder="Descrição (ex: Mercado, Uber...)" value={descricao} onChange={(e) => setDescricao(e.target.value)}
+            style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #E2E6DE", marginBottom: 10, fontSize: 14 }} />
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <input type="text" inputMode="decimal" placeholder="R$ 0,00" value={valor} onChange={(e) => setValor(e.target.value)}
+              style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1px solid #E2E6DE", fontSize: 14 }} />
+            <input type="date" value={data} onChange={(e) => setData(e.target.value)}
+              style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1px solid #E2E6DE", fontSize: 13 }} />
+            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)}
+              style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1px solid #E2E6DE", fontSize: 13 }} />
+          </div>
+
+          <select value={categoria} onChange={(e) => setCategoria(e.target.value)}
+            style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #E2E6DE", marginBottom: 12, fontSize: 14, background: "#fff" }}>
+            {(tipo === "receita" ? CATEGORIAS_RECEITA : CATEGORIAS_DESPESA).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          <button type="submit" style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: "#1B2A34", color: "#F0F3EC", fontWeight: 600, fontSize: 14 }}>
+            + Adicionar lançamento
+          </button>
+        </form>
+
+        {porMes.length > 1 && (
+          <div style={{ marginTop: 22, background: "#FFFFFF", borderRadius: 14, padding: 18, boxShadow: "0 8px 24px -8px #1B2A3414" }}>
+            <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: "#8A968C", fontWeight: 600, marginBottom: 10 }}>Receitas x despesas por mês</div>
+            <div style={{ width: "100%", height: 180 }}><BarChartCanvas dados={porMes} /></div>
+          </div>
+        )}
+
+        {porCategoria.length > 0 && (
+          <div style={{ marginTop: 22, background: "#FFFFFF", borderRadius: 14, padding: 18, boxShadow: "0 8px 24px -8px #1B2A3414" }}>
+            <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: "#8A968C", fontWeight: 600, marginBottom: 4 }}>Gastos por categoria</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ width: 140, height: 140, flexShrink: 0 }}><PieChartCanvas dados={porCategoria} /></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {porCategoria.map(([cat, val]) => (
+                  <div key={cat} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 7 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: CORES_CATEGORIA[cat] || "#8A968C", flexShrink: 0 }} />
+                      <span style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cat}</span>
+                    </div>
+                    <span className="num" style={{ fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>{formatarMoeda(val)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: 24 }}>
+          <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: "#8A968C", fontWeight: 600, marginBottom: 10 }}>Lançamentos do mês</div>
+          {transacoesDoMes.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "36px 0", color: "#8A968C", fontSize: 14 }}>
+              <div style={{fontSize: 28, marginBottom: 8, opacity: 0.5}}>💰</div>
+              <div>Nenhum lançamento neste mês ainda.</div>
+              <div style={{ fontSize: 12, marginTop: 2 }}>Adicione o primeiro acima.</div>
+            </div>
+          ) : (
+            transacoesDoMes.map((t) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid #E2E6DE" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: CORES_CATEGORIA[t.categoria] || "#8A968C" }} />
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{t.descricao}</div>
+                    <div style={{ fontSize: 12, color: "#8A968C" }}>{t.categoria} · {new Date(t.data + "T00:00:00").toLocaleDateString("pt-BR")}{t.hora ? ` · ${t.hora}` : ""}</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="num" style={{ fontWeight: 600, fontSize: 14, color: t.tipo === "receita" ? "#2F6F4E" : "#C2542D" }}>
+                    {t.tipo === "receita" ? "+" : "−"} {formatarMoeda(t.valor)}
+                  </span>
+                  <button onClick={() => removerTransacao(t.id)} style={{ background: "none", border: "none", color: "#B7C0B5", padding: 4, fontSize: 15 }} aria-label="Remover lançamento">🗑</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ControleFinanceiro />);
+</script>
+</body>
+</html>
