@@ -1,0 +1,15 @@
+{
+  "name": "Livro-caixa — Controle Financeiro",
+  "short_name": "Livro-caixa",
+  "description": "Controle financeiro pessoal com gráficos, metas e parcelamento.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F0F3EC",
+  "theme_color": "#1B2A34",
+  "icons": [
+    { "src": "icone.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icone.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

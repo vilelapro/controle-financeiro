@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Livro-caixa</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icone.png">
+<link rel="apple-touch-icon" href="./icone.png">
+<meta name="theme-color" content="#1B2A34">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Livro-caixa">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: 'Inter', sans-serif; font-size: 15px; line-height: 1.45; transition: background .2s ease, color .2s ease; -webkit-text-size-adjust: 100%; }
+  .num { font-family: 'Space Grotesk', monospace; font-variant-numeric: tabular-nums; }
+  input, select, button, textarea { font-family: 'Inter', sans-serif; }
+  button { cursor: pointer; }
+  ::selection { background: #D4A73A55; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid #D4A73A; outline-offset: 1px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+const CATEGORIAS_RECEITA = ["Salário", "Freelance", "Outros"];
+const CATEGORIAS_DESPESA = ["Alimentação", "Transporte", "Moradia", "Lazer", "Saúde", "Outros"];
+
+const CORES_CATEGORIA = {
+  "Salário": "#2F6F4E", "Freelance": "#3E8B63", "Outros": "#8A8272",
+  "Alimentação": "#C2542D", "Transporte": "#B8863A", "Moradia": "#8C4A3E",
+  "Lazer": "#A65A8A", "Saúde": "#4A6FA5",
+};
+
+const CONTA_PADRAO = { id: "geral", nome: "Geral" };
+
+const CHAVES = {
+  transacoes: "cf_transacoes",
+  recorrentes: "cf_recorrentes",
+  metas: "cf_metas",
+  tema: "cf_tema",
+  contas: "cf_contas",
+  ultimoBackup: "cf_ultimo_backup",
+};
+
+const TEMA_CLARO = {
+  bg: "#F0F3EC", surface: "#FFFFFF", header: "#1B2A34", ink: "#1B2A34",
+  muted: "#5E6B62", line: "#DDE2D8", income: "#2F6F4E", expense: "#C2542D",
+  gold: "#B8873A", incomeSoft: "#7FD9A8", expenseSoft: "#E88A78", inputBg: "#FFFFFF",
+};
+const TEMA_ESCURO = {
+  bg: "#10151A", surface: "#1E272E", header: "#0B0F13", ink: "#F5F7F3",
+  muted: "#A8B2B0", line: "#323F45", income: "#5CC28C", expense: "#EC9878",
+  gold: "#E8C070", incomeSoft: "#6FE0A0", expenseSoft: "#F0987A", inputBg: "#161D22",
+};
+
+function formatarMoeda(valor) {
+  return valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+function mesAtualISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function hojeISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function diasNoMes(anoMes) {
+  const [ano, mes] = anoMes.split("-").map(Number);
+  return new Date(ano, mes, 0).getDate();
+}
+
+function ler(chave, padrao) {
+  try {
+    const bruto = localStorage.getItem(chave);
+    return bruto ? JSON.parse(bruto) : padrao;
+  } catch (e) { return padrao; }
+}
+function gravar(chave, valor) {
+  try { localStorage.setItem(chave, JSON.stringify(valor)); return true; }
+  catch (e) { return false; }
+}
+function gerarRecorrentesDoMes(mes, transacoesAtuais, recorrentesAtuais) {
+  if (!recorrentesAtuais.length) return transacoesAtuais;
+  let novas = [...transacoesAtuais];
+  let mudou = false;
+  recorrentesAtuais.forEach((rec) => {
+    const jaExiste = novas.some((t) => t.recorrenteId === rec.id && t.data.slice(0, 7) === mes);
+    if (!jaExiste) {
+      const dia = Math.min(rec.diaDoMes, diasNoMes(mes));
+      novas.push({
+        id: `${rec.id}-${mes}`, tipo: rec.tipo, descricao: rec.descricao, valor: rec.valor,
+        categoria: rec.categoria, contaId: rec.contaId || CONTA_PADRAO.id,
+        data: `${mes}-${String(dia).padStart(2, "0")}`, hora: "00:00", recorrenteId: rec.id,
+      });
+      mudou = true;
+    }
+  });
+  return mudou ? novas : transacoesAtuais;
+}
+
+function PieChartCanvas({ dados }) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(() => {
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type: "doughnut",
+      data: { labels: dados.map(([cat]) => cat), datasets: [{ data: dados.map(([, val]) => val), backgroundColor: dados.map(([cat]) => CORES_CATEGORIA[cat] || "#8A968C"), borderWidth: 0 }] },
+      options: { cutout: "62%", plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${formatarMoeda(ctx.parsed)}` } } } },
+    });
+    return () => chartRef.current && chartRef.current.destroy();
+  }, [dados]);
+  return <canvas ref={ref} width={130} height={130} />;
+}
+function BarChartCanvas({ dados, cor }) {
+  const ref = useRef(null);
+  const chartRef = useRef(null);
+  useEffect(() => {
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(ref.current, {
+      type: "bar",
+      data: { labels: dados.map((d) => d.mes), datasets: [
+        { label: "Receitas", data: dados.map((d) => d.Receitas), backgroundColor: "#2F6F4E", borderRadius: 4, maxBarThickness: 16 },
+        { label: "Despesas", data: dados.map((d) => d.Despesas), backgroundColor: "#C2542D", borderRadius: 4, maxBarThickness: 16 },
+      ]},
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${formatarMoeda(ctx.parsed.y)}` } } },
+        scales: { x: { grid: { display: false }, ticks: { font: { size: 11 }, color: cor.muted } },
+          y: { grid: { color: cor.line }, ticks: { font: { size: 10 }, color: cor.muted, callback: (v) => v >= 1000 ? `${v / 1000}k` : v } } } },
+    });
+    return () => chartRef.current && chartRef.current.destroy();
+  }, [dados, cor]);
+  return <canvas ref={ref} height={170} />;
+}
+
+function ControleFinanceiro() {
+  const [temaEscuro, setTemaEscuro] = useState(() => ler(CHAVES.tema, false));
+  const c = temaEscuro ? TEMA_ESCURO : TEMA_CLARO;
+
+  const [transacoes, setTransacoes] = useState(() => ler(CHAVES.transacoes, []));
+  const [recorrentes, setRecorrentes] = useState(() => ler(CHAVES.recorrentes, []));
+  const [metas, setMetas] = useState(() => ler(CHAVES.metas, {}));
+  const [contas, setContas] = useState(() => { const salvas = ler(CHAVES.contas, null); return salvas && salvas.length ? salvas : [CONTA_PADRAO]; });
+  const [ultimoBackup, setUltimoBackup] = useState(() => ler(CHAVES.ultimoBackup, null));
+  const [erroStorage, setErroStorage] = useState(false);
+  const [mostrarMetas, setMostrarMetas] = useState(false);
+  const [mostrarContas, setMostrarContas] = useState(false);
+  const [novaContaNome, setNovaContaNome] = useState("");
+  const [mesSelecionado, setMesSelecionado] = useState(mesAtualISO());
+  const [filtroCategoria, setFiltroCategoria] = useState("todas");
+  const [filtroConta, setFiltroConta] = useState("todas");
+  const [editandoId, setEditandoId] = useState(null);
+
+  const [tipo, setTipo] = useState("despesa");
+  const [descricao, setDescricao] = useState("");
+  const [valor, setValor] = useState("");
+  const [categoria, setCategoria] = useState(CATEGORIAS_DESPESA[0]);
+  const [contaId, setContaId] = useState(CONTA_PADRAO.id);
+  const [data, setData] = useState(hojeISO());
+  const [hora, setHora] = useState(new Date().toTimeString().slice(0, 5));
+  const [recorrente, setRecorrente] = useState(false);
+  const [parcelarAtivo, setParcelarAtivo] = useState(false);
+  const [numParcelas, setNumParcelas] = useState(2);
+
+  useEffect(() => {
+    const mAtual = mesAtualISO();
+    setTransacoes((prev) => {
+      const atualizadas = gerarRecorrentesDoMes(mAtual, prev, recorrentes);
+      if (atualizadas !== prev) gravar(CHAVES.transacoes, atualizadas);
+      return atualizadas;
+    });
+    // eslint-disable-next-line
+  }, []);
+
+  useEffect(() => { gravar(CHAVES.tema, temaEscuro); }, [temaEscuro]);
+  useEffect(() => {
+    if (contas.length && !contas.some((ct) => ct.id === contaId)) setContaId(contas[0].id);
+  }, [contas]);
+
+  function salvarTransacoes(novas) { setTransacoes(novas); setErroStorage(!gravar(CHAVES.transacoes, novas)); }
+  function salvarRecorrentes(novas) { setRecorrentes(novas); gravar(CHAVES.recorrentes, novas); }
+  function salvarMetas(novas) { setMetas(novas); gravar(CHAVES.metas, novas); }
+  function salvarContas(novas) { setContas(novas); gravar(CHAVES.contas, novas); }
+
+  function adicionarConta() {
+    const nome = novaContaNome.trim();
+    if (!nome) return;
+    const novaConta = { id: `conta-${Date.now()}`, nome };
+    salvarContas([...contas, novaConta]);
+    setContaId(novaConta.id);
+    setNovaContaNome("");
+  }
+  function removerConta(id) {
+    if (contas.length <= 1) return;
+    if (!window.confirm("Excluir esta conta? Os lançamentos dela passam a ficar em \"Geral\".")) return;
+    const restantes = contas.filter((ct) => ct.id !== id);
+    salvarContas(restantes.length ? restantes : [CONTA_PADRAO]);
+    salvarTransacoes(transacoes.map((t) => t.contaId === id ? { ...t, contaId: CONTA_PADRAO.id } : t));
+  }
+
+  function limparFormulario() {
+    setDescricao(""); setValor(""); setEditandoId(null); setRecorrente(false);
+    setParcelarAtivo(false); setNumParcelas(2);
+    setData(hojeISO()); setHora(new Date().toTimeString().slice(0, 5));
+  }
+
+  function enviarFormulario(e) {
+    e.preventDefault();
+    const valorNum = parseFloat(String(valor).replace(",", "."));
+    if (!descricao.trim() || isNaN(valorNum) || valorNum <= 0) return;
+
+    if (editandoId) {
+      salvarTransacoes(transacoes.map((t) => t.id === editandoId
+        ? { ...t, tipo, descricao: descricao.trim(), valor: valorNum, categoria, contaId, data, hora: hora || "00:00" } : t));
+      limparFormulario();
+      return;
+    }
+
+    if (parcelarAtivo && numParcelas >= 2) {
+      const n = Math.min(48, Math.max(2, Math.round(numParcelas)));
+      const valorParcela = Math.floor((valorNum / n) * 100) / 100;
+      const somaParcelas = valorParcela * (n - 1);
+      const ultimaParcela = Math.round((valorNum - somaParcelas) * 100) / 100;
+      const parcelamentoId = `parc-${Date.now()}`;
+      const [anoBase, mesBase, diaBase] = data.split("-").map(Number);
+      const novasParcelas = Array.from({ length: n }, (_, i) => {
+        const totalMeses = mesBase - 1 + i;
+        const ano = anoBase + Math.floor(totalMeses / 12);
+        const mes = (totalMeses % 12) + 1;
+        const mesStr = `${ano}-${String(mes).padStart(2, "0")}`;
+        const dia = Math.min(diaBase, diasNoMes(mesStr));
+        return {
+          id: `${parcelamentoId}-${i}`, tipo, descricao: descricao.trim(), valor: i === n - 1 ? ultimaParcela : valorParcela,
+          categoria, contaId, data: `${mesStr}-${String(dia).padStart(2, "0")}`, hora: hora || "00:00",
+          parcelamentoId, parcelaAtual: i + 1, parcelaTotal: n,
+        };
+      });
+      salvarTransacoes([...novasParcelas, ...transacoes]);
+      limparFormulario();
+      return;
+    }
+
+    const novaTransacao = { id: Date.now().toString(), tipo, descricao: descricao.trim(), valor: valorNum, categoria, contaId, data, hora: hora || "00:00" };
+    salvarTransacoes([novaTransacao, ...transacoes]);
+
+    if (recorrente) {
+      const novoModelo = { id: `rec-${Date.now()}`, tipo, descricao: descricao.trim(), valor: valorNum, categoria, contaId, diaDoMes: Number(data.slice(8, 10)) };
+      salvarRecorrentes([...recorrentes, novoModelo]);
+    }
+    limparFormulario();
+  }
+
+  function iniciarEdicao(t) {
+    setEditandoId(t.id); setTipo(t.tipo); setDescricao(t.descricao);
+    setValor(String(t.valor).replace(".", ",")); setCategoria(t.categoria);
+    setContaId(t.contaId || CONTA_PADRAO.id); setData(t.data); setHora(t.hora || "00:00");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function removerTransacao(t) {
+    if (t.parcelamentoId) {
+      const excluirTodas = window.confirm(`"${t.descricao}" é a parcela ${t.parcelaAtual}/${t.parcelaTotal}.\n\nOK = excluir todas as parcelas dessa compra\nCancelar = excluir só essa parcela`);
+      if (excluirTodas) {
+        salvarTransacoes(transacoes.filter((x) => x.parcelamentoId !== t.parcelamentoId));
+        if (editandoId && transacoes.find((x) => x.id === editandoId)?.parcelamentoId === t.parcelamentoId) limparFormulario();
+        return;
+      }
+      salvarTransacoes(transacoes.filter((x) => x.id !== t.id));
+      if (editandoId === t.id) limparFormulario();
+      return;
+    }
+    if (!window.confirm(`Excluir "${t.descricao}" (${formatarMoeda(t.valor)})?`)) return;
+    salvarTransacoes(transacoes.filter((x) => x.id !== t.id));
+    if (editandoId === t.id) limparFormulario();
+  }
+
+  function exportarCSV() {
+    const cabecalho = "Data,Hora,Tipo,Categoria,Conta,Descrição,Valor\n";
+    const linhas = [...transacoes].sort((a, b) => a.data.localeCompare(b.data)).map((t) =>
+      `${t.data},${t.hora || ""},${t.tipo},${t.categoria},${(contas.find((ct) => ct.id === t.contaId) || CONTA_PADRAO).nome},"${t.descricao.replace(/"/g, '""')}",${t.valor.toFixed(2)}`
+    ).join("\n");
+    const blob = new Blob([cabecalho + linhas], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `livro-caixa-${mesSelecionado}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
+  function exportarBackup() {
+    const backup = { transacoes, recorrentes, metas, contas, exportadoEm: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `backup-livro-caixa.json`; a.click(); URL.revokeObjectURL(url);
+    const registro = { data: new Date().toISOString(), contagem: transacoes.length };
+    gravar(CHAVES.ultimoBackup, registro);
+    setUltimoBackup(registro);
+  }
+  function importarBackup(e) {
+    const arquivo = e.target.files[0];
+    if (!arquivo) return;
+    const leitor = new FileReader();
+    leitor.onload = (ev) => {
+      try {
+        const dados = JSON.parse(ev.target.result);
+        if (!window.confirm("Isso vai substituir todos os dados atuais pelos do backup. Continuar?")) return;
+        if (Array.isArray(dados.transacoes)) salvarTransacoes(dados.transacoes);
+        if (Array.isArray(dados.recorrentes)) salvarRecorrentes(dados.recorrentes);
+        if (dados.metas) salvarMetas(dados.metas);
+        if (Array.isArray(dados.contas) && dados.contas.length) salvarContas(dados.contas);
+      } catch (err) { alert("Não consegui ler esse arquivo de backup."); }
+    };
+    leitor.readAsText(arquivo);
+    e.target.value = "";
+  }
+
+  const transacoesDoMes = useMemo(
+    () => transacoes.filter((t) => t.data.slice(0, 7) === mesSelecionado).sort((a, b) => b.data.localeCompare(a.data) || (b.hora || "").localeCompare(a.hora || "")),
+    [transacoes, mesSelecionado]
+  );
+  const categoriasDisponiveis = useMemo(() => Array.from(new Set(transacoesDoMes.map((t) => t.categoria))).sort(), [transacoesDoMes]);
+
+  const transacoesFiltradas = useMemo(() => transacoesDoMes
+    .filter((t) => filtroCategoria === "todas" || t.categoria === filtroCategoria)
+    .filter((t) => filtroConta === "todas" || (t.contaId || CONTA_PADRAO.id) === filtroConta),
+    [transacoesDoMes, filtroCategoria, filtroConta]);
+
+  const { totalReceitas, totalDespesas, saldo } = useMemo(() => {
+    let r = 0, d = 0;
+    transacoesDoMes.forEach((t) => (t.tipo === "receita" ? (r += t.valor) : (d += t.valor)));
+    return { totalReceitas: r, totalDespesas: d, saldo: r - d };
+  }, [transacoesDoMes]);
+
+  const saldoPorConta = useMemo(() => {
+    const mapa = {};
+    contas.forEach((ct) => { mapa[ct.id] = 0; });
+    transacoesDoMes.forEach((t) => {
+      const id = t.contaId || CONTA_PADRAO.id;
+      if (!(id in mapa)) mapa[id] = 0;
+      mapa[id] += t.tipo === "receita" ? t.valor : -t.valor;
+    });
+    return contas.map((ct) => ({ ...ct, saldo: mapa[ct.id] || 0 }));
+  }, [transacoesDoMes, contas]);
+
+  const gastoHoje = useMemo(() => {
+    const hj = hojeISO();
+    return transacoes.filter((t) => t.data === hj && t.tipo === "despesa").reduce((s, t) => s + t.valor, 0);
+  }, [transacoes]);
+
+  const porCategoria = useMemo(() => {
+    const mapa = {};
+    transacoesDoMes.filter((t) => t.tipo === "despesa").forEach((t) => { mapa[t.categoria] = (mapa[t.categoria] || 0) + t.valor; });
+    return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
+  }, [transacoesDoMes]);
+
+  const lembretesContasFixas = useMemo(() => {
+    if (!recorrentes.length) return [];
+    const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+    const mAtual = mesAtualISO();
+    return recorrentes.map((r) => {
+      const dia = Math.min(r.diaDoMes, diasNoMes(mAtual));
+      const vencimento = new Date(`${mAtual}-${String(dia).padStart(2, "0")}T00:00:00`);
+      const diasRestantes = Math.round((vencimento - hoje) / 86400000);
+      return { ...r, diasRestantes };
+    }).filter((r) => r.diasRestantes >= -2 && r.diasRestantes <= 5)
+      .sort((a, b) => a.diasRestantes - b.diasRestantes);
+  }, [recorrentes]);
+
+  const lembreteBackup = useMemo(() => {
+    if (!transacoes.length) return null;
+    if (!ultimoBackup) {
+      return transacoes.length >= 8 ? "Você já tem vários lançamentos e nunca fez um backup. Vale exportar, pra não correr risco de perder tudo." : null;
+    }
+    const dias = Math.floor((Date.now() - new Date(ultimoBackup.data).getTime()) / 86400000);
+    const novosLancamentos = transacoes.length - (ultimoBackup.contagem || 0);
+    if (dias >= 21) return `Já faz ${dias} dias desde o último backup. Bom manter atualizado.`;
+    if (novosLancamentos >= 20) return `Você adicionou ${novosLancamentos} lançamentos desde o último backup. Vale exportar de novo.`;
+    return null;
+  }, [transacoes, ultimoBackup]);
+
+  const porMes = useMemo(() => {
+    const mapa = {};
+    transacoes.forEach((t) => {
+      const chave = t.data.slice(0, 7);
+      if (!mapa[chave]) mapa[chave] = { receita: 0, despesa: 0 };
+      mapa[chave][t.tipo] += t.valor;
+    });
+    return Object.entries(mapa).sort((a, b) => a[0].localeCompare(b[0])).slice(-6)
+      .map(([chave, valores]) => ({ mes: new Date(chave + "-02").toLocaleDateString("pt-BR", { month: "short" }).replace(".", ""), chave, Receitas: valores.receita, Despesas: valores.despesa }));
+  }, [transacoes]);
+
+  const nomeMes = new Date(mesSelecionado + "-02").toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 14, background: c.inputBg, color: c.ink };
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 48, background: c.bg, color: c.ink }}>
+      <div style={{ background: c.header, color: "#F0F3EC", padding: "24px 20px 34px", position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", top: -30, right: -30, width: 140, height: 140, borderRadius: "50%", border: "1px solid #F0F3EC22" }} />
+        <div style={{ maxWidth: 480, margin: "0 auto", position: "relative" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+            <span style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.65, fontWeight: 600 }}>Livro-caixa</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button onClick={() => setTemaEscuro(!temaEscuro)} title="Alternar tema" style={{ background: "transparent", border: "1px solid #F0F3EC44", color: "#F0F3EC", borderRadius: 6, padding: "5px 9px", fontSize: 13 }}>{temaEscuro ? "☀" : "☾"}</button>
+              <input type="month" value={mesSelecionado} onChange={(e) => setMesSelecionado(e.target.value)} style={{ background: "transparent", border: "1px solid #F0F3EC44", color: "#F0F3EC", borderRadius: 6, padding: "5px 8px", fontSize: 13 }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 13, opacity: 0.65, marginBottom: 4, textTransform: "capitalize" }}>{nomeMes}</div>
+          <div className="num" style={{ fontSize: 44, fontWeight: 700, letterSpacing: -0.5, color: saldo >= 0 ? c.incomeSoft : c.expenseSoft }}>{formatarMoeda(saldo)}</div>
+          <div style={{ display: "flex", gap: 18, marginTop: 16, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ color: c.incomeSoft }}>↑</span><span className="num" style={{ fontSize: 14 }}>{formatarMoeda(totalReceitas)}</span></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ color: c.expenseSoft }}>↓</span><span className="num" style={{ fontSize: 14 }}>{formatarMoeda(totalDespesas)}</span></div>
+            <div style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7, background: "#00000022", padding: "4px 9px", borderRadius: 20 }}>Hoje: <span className="num">{formatarMoeda(gastoHoje)}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 20px" }}>
+        {lembreteBackup && (
+          <div style={{ marginTop: 16, background: c.surface, border: `1px solid ${c.gold}55`, borderRadius: 12, padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13, color: c.ink, flex: 1, minWidth: 180 }}>💾 {lembreteBackup}</div>
+            <button onClick={exportarBackup} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: c.gold, color: c.header, fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>
+              Exportar agora
+            </button>
+          </div>
+        )}
+
+        {lembretesContasFixas.length > 0 && (
+          <div style={{ marginTop: 16, background: c.surface, border: `1px solid ${c.gold}55`, borderRadius: 12, padding: 14 }}>
+            <div style={{ fontSize: 11.5, letterSpacing: 1, textTransform: "uppercase", color: c.gold, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              🔔 Contas fixas da semana
+            </div>
+            {lembretesContasFixas.map((r) => (
+              <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0" }}>
+                <div>
+                  <div style={{ fontSize: 13.5, color: c.ink }}>{r.descricao}</div>
+                  <div style={{ fontSize: 11.5, color: r.diasRestantes < 0 ? c.expense : c.muted }}>
+                    {r.diasRestantes < 0 ? `venceu há ${Math.abs(r.diasRestantes)} dia${Math.abs(r.diasRestantes) > 1 ? "s" : ""}`
+                      : r.diasRestantes === 0 ? "vence hoje"
+                      : r.diasRestantes === 1 ? "vence amanhã"
+                      : `vence em ${r.diasRestantes} dias`}
+                  </div>
+                </div>
+                <span className="num" style={{ fontSize: 14, fontWeight: 600, color: r.tipo === "receita" ? c.income : c.expense }}>{formatarMoeda(r.valor)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {erroStorage && (
+          <div style={{ marginTop: 16, background: "#5A2E22", color: "#F5D9CC", borderRadius: 10, padding: 12, fontSize: 12.5 }}>
+            Não consegui salvar os dados nesse navegador (modo privado ou armazenamento cheio). Os lançamentos vão sumir ao fechar a página.
+          </div>
+        )}
+
+        <form onSubmit={enviarFormulario} style={{ background: c.surface, borderRadius: 14, padding: 18, marginTop: -16, boxShadow: "0 8px 24px -8px #1B2A3422" }}>
+          {editandoId && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, fontSize: 12.5, color: c.gold, fontWeight: 600 }}>
+              <span>Editando lançamento</span>
+              <button type="button" onClick={limparFormulario} style={{ background: "none", border: "none", color: c.muted, fontSize: 12.5, textDecoration: "underline" }}>cancelar</button>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {["despesa", "receita"].map((op) => (
+              <button key={op} type="button" onClick={() => { setTipo(op); setCategoria(op === "receita" ? CATEGORIAS_RECEITA[0] : CATEGORIAS_DESPESA[0]); }}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", background: tipo === op ? (op === "receita" ? c.income : c.expense) : c.bg, color: tipo === op ? "#fff" : c.muted, fontWeight: 600, fontSize: 13 }}>
+                {op === "receita" ? "Receita" : "Despesa"}
+              </button>
+            ))}
+          </div>
+
+          <input type="text" placeholder="Descrição (ex: Mercado, Uber...)" value={descricao} onChange={(e) => setDescricao(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <input type="text" inputMode="decimal" placeholder="R$ 0,00" value={valor} onChange={(e) => setValor(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+            <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: 13 }} />
+            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: 13 }} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <select value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+              {(tipo === "receita" ? CATEGORIAS_RECEITA : CATEGORIAS_DESPESA).map((cat) => <option key={cat} value={cat}>{cat}</option>)}
+            </select>
+            <select value={contaId} onChange={(e) => setContaId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+              {contas.map((ct) => <option key={ct.id} value={ct.id}>{ct.nome}</option>)}
+            </select>
+          </div>
+
+          {!editandoId && tipo === "despesa" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: c.muted, cursor: "pointer" }}>
+                <input type="checkbox" checked={parcelarAtivo} onChange={(e) => { setParcelarAtivo(e.target.checked); if (e.target.checked) setRecorrente(false); }} />
+                Parcelar compra
+              </label>
+              {parcelarAtivo && (
+                <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: c.muted }}>
+                  em
+                  <input type="number" min="2" max="48" value={numParcelas} onChange={(e) => setNumParcelas(e.target.value)}
+                    style={{ width: 52, padding: "4px 6px", borderRadius: 6, border: `1px solid ${c.line}`, background: c.inputBg, color: c.ink, fontSize: 13 }} />
+                  vezes {valor && numParcelas >= 2 ? `de ${formatarMoeda(parseFloat(String(valor).replace(",", ".")) / numParcelas || 0)}` : ""}
+                </span>
+              )}
+            </div>
+          )}
+
+          {!editandoId && !parcelarAtivo && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: c.muted, marginBottom: 12, cursor: "pointer" }}>
+              <input type="checkbox" checked={recorrente} onChange={(e) => setRecorrente(e.target.checked)} />
+              Repetir todo mês (dia {data.slice(8, 10)})
+            </label>
+          )}
+
+          <button type="submit" style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: c.gold, color: c.header, fontWeight: 700, fontSize: 14 }}>
+            {editandoId ? "Salvar alterações" : "+ Adicionar lançamento"}
+          </button>
+        </form>
+
+        {recorrentes.length > 0 && (
+          <div style={{ marginTop: 12, fontSize: 12, color: c.muted, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {recorrentes.map((r) => (
+              <span key={r.id} style={{ background: c.surface, border: `1px solid ${c.line}`, borderRadius: 20, padding: "4px 10px", display: "flex", alignItems: "center", gap: 6 }}>
+                🔁 {r.descricao}
+                <button onClick={() => { if (window.confirm(`Parar de repetir "${r.descricao}" todo mês?`)) salvarRecorrentes(recorrentes.filter((x) => x.id !== r.id)); }} style={{ background: "none", border: "none", color: c.muted, fontSize: 12, padding: 0 }}>✕</button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: 22, background: c.surface, borderRadius: 14, padding: 18, boxShadow: "0 8px 24px -8px #1B2A3414" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: mostrarContas ? 12 : 0 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: c.muted, fontWeight: 600 }}>Saldo por conta</div>
+            <button onClick={() => setMostrarContas(!mostrarContas)} style={{ background: "none", border: "none", color: c.gold, fontSize: 11.5, fontWeight: 600 }}>
+              {mostrarContas ? "ocultar" : "gerenciar contas"}
+            </button>
+          </div>
+
+          {mostrarContas && (
+            <div style={{ background: c.bg, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+              {contas.map((ct) => (
+                <div key={ct.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12.5 }}>{ct.nome}</span>
+                  {contas.length > 1 && <button onClick={() => removerConta(ct.id)} style={{ background: "none", border: "none", color: c.muted, fontSize: 12 }}>excluir</button>}
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                <input type="text" placeholder="Nova conta (ex: Cartão)" value={novaContaNome} onChange={(e) => setNovaContaNome(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), adicionarConta())}
+                  style={{ flex: 1, padding: "7px 10px", borderRadius: 6, border: `1px solid ${c.line}`, fontSize: 12.5, background: c.inputBg, color: c.ink }} />
+                <button type="button" onClick={adicionarConta} style={{ padding: "7px 12px", borderRadius: 6, border: "none", background: c.gold, color: c.header, fontSize: 12.5, fontWeight: 700 }}>+</button>
+              </div>
+            </div>
+          )}
+
+          {saldoPorConta.map((ct) => (
+            <div key={ct.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13.5 }}>
+              <span>{ct.nome}</span>
+              <span className="num" style={{ fontWeight: 600, color: ct.saldo >= 0 ? c.income : c.expense }}>{formatarMoeda(ct.saldo)}</span>
+            </div>
+          ))}
+        </div>
+
+        {porMes.length > 1 && (
+          <div style={{ marginTop: 22, background: c.surface, borderRadius: 14, padding: 18, boxShadow: "0 8px 24px -8px #1B2A3414" }}>
+            <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: c.muted, fontWeight: 600, marginBottom: 10 }}>Receitas x despesas por mês</div>
+            <div style={{ width: "100%", height: 170 }}><BarChartCanvas dados={porMes} cor={c} /></div>
+          </div>
+        )}
+
+        {porCategoria.length > 0 && (
+          <div style={{ marginTop: 22, background: c.surface, borderRadius: 14, padding: 18, boxShadow: "0 8px 24px -8px #1B2A3414" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: c.muted, fontWeight: 600 }}>Gastos por categoria</div>
+              <button onClick={() => setMostrarMetas(!mostrarMetas)} style={{ background: "none", border: "none", color: c.gold, fontSize: 11.5, fontWeight: 600 }}>{mostrarMetas ? "ocultar metas" : "definir metas"}</button>
+            </div>
+
+            {mostrarMetas && (
+              <div style={{ background: c.bg, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+                {CATEGORIAS_DESPESA.map((cat) => (
+                  <div key={cat} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 12.5 }}>{cat}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ fontSize: 12, color: c.muted }}>R$</span>
+                      <input type="number" min="0" placeholder="sem limite" value={metas[cat] || ""} onChange={(e) => salvarMetas({ ...metas, [cat]: e.target.value ? Number(e.target.value) : undefined })}
+                        style={{ width: 84, padding: "5px 7px", borderRadius: 6, border: `1px solid ${c.line}`, fontSize: 12.5, background: c.inputBg, color: c.ink }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ width: 130, height: 130, flexShrink: 0 }}><PieChartCanvas dados={porCategoria} /></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {porCategoria.map(([cat, val]) => {
+                  const meta = metas[cat];
+                  const pct = meta ? Math.min(100, (val / meta) * 100) : null;
+                  const estourou = meta && val > meta;
+                  return (
+                    <div key={cat} style={{ marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: CORES_CATEGORIA[cat] || "#8A968C", flexShrink: 0 }} />
+                          <span style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cat}</span>
+                        </div>
+                        <span className="num" style={{ fontSize: 12.5, fontWeight: 600, color: estourou ? c.expense : c.ink, flexShrink: 0 }}>{formatarMoeda(val)}{meta ? ` / ${formatarMoeda(meta)}` : ""}</span>
+                      </div>
+                      {meta && <div style={{ height: 4, background: c.line, borderRadius: 2, marginTop: 3, overflow: "hidden" }}><div style={{ height: "100%", width: `${pct}%`, background: estourou ? c.expense : CORES_CATEGORIA[cat] }} /></div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", color: c.muted, fontWeight: 600 }}>Lançamentos do mês</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {contas.length > 1 && (
+                <select value={filtroConta} onChange={(e) => setFiltroConta(e.target.value)} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: `1px solid ${c.line}`, background: c.surface, color: c.ink }}>
+                  <option value="todas">Todas as contas</option>
+                  {contas.map((ct) => <option key={ct.id} value={ct.id}>{ct.nome}</option>)}
+                </select>
+              )}
+              {categoriasDisponiveis.length > 1 && (
+                <select value={filtroCategoria} onChange={(e) => setFiltroCategoria(e.target.value)} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: `1px solid ${c.line}`, background: c.surface, color: c.ink }}>
+                  <option value="todas">Todas as categorias</option>
+                  {categoriasDisponiveis.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
+                </select>
+              )}
+            </div>
+          </div>
+
+          {transacoesFiltradas.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "36px 0", color: c.muted, fontSize: 14 }}>
+              <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5 }}>💰</div>
+              <div>Nenhum lançamento aqui ainda.</div>
+              <div style={{ fontSize: 12, marginTop: 2 }}>Adicione o primeiro acima.</div>
+            </div>
+          ) : (
+            transacoesFiltradas.map((t) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderBottom: `1px solid ${c.line}` }}>
+                <button onClick={() => iniciarEdicao(t)} style={{ background: "none", border: "none", padding: 0, display: "flex", alignItems: "center", gap: 10, textAlign: "left", cursor: "pointer" }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: CORES_CATEGORIA[t.categoria] || "#8A968C", flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontSize: 15.5, fontWeight: 600, color: c.ink }}>{t.descricao}{t.recorrenteId ? " 🔁" : ""}{t.parcelamentoId ? ` · ${t.parcelaAtual}/${t.parcelaTotal}` : ""}</div>
+                    <div style={{ fontSize: 13, color: c.muted, marginTop: 1 }}>{t.categoria} · {(contas.find((ct) => ct.id === t.contaId) || CONTA_PADRAO).nome} · {new Date(t.data + "T00:00:00").toLocaleDateString("pt-BR")}{t.hora ? ` · ${t.hora}` : ""}</div>
+                  </div>
+                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="num" style={{ fontWeight: 700, fontSize: 15.5, color: t.tipo === "receita" ? c.income : c.expense }}>{t.tipo === "receita" ? "+" : "−"} {formatarMoeda(t.valor)}</span>
+                  <button onClick={() => removerTransacao(t)} style={{ background: "none", border: "none", color: c.muted, padding: 8, marginRight: -8, fontSize: 17 }} aria-label="Excluir lançamento">🗑</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div style={{ marginTop: 28, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={exportarCSV} style={{ flex: 1, minWidth: 140, padding: "10px 0", borderRadius: 8, border: `1px solid ${c.line}`, background: c.surface, color: c.ink, fontSize: 12.5, fontWeight: 600 }}>⬇ Exportar CSV</button>
+          <button onClick={exportarBackup} style={{ flex: 1, minWidth: 140, padding: "10px 0", borderRadius: 8, border: `1px solid ${c.line}`, background: c.surface, color: c.ink, fontSize: 12.5, fontWeight: 600 }}>💾 Backup completo</button>
+          <label style={{ flex: 1, minWidth: 140, padding: "10px 0", borderRadius: 8, border: `1px solid ${c.line}`, background: c.surface, color: c.ink, fontSize: 12.5, fontWeight: 600, textAlign: "center", cursor: "pointer" }}>
+            ⬆ Restaurar backup
+            <input type="file" accept="application/json" onChange={importarBackup} style={{ display: "none" }} />
+          </label>
+        </div>
+        <div style={{ marginTop: 10, fontSize: 11, color: c.muted, textAlign: "center" }}>Os dados ficam salvos só neste navegador. Faça backup de vez em quando.</div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ControleFinanceiro />);
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
